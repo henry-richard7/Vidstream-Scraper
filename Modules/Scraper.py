@@ -25,7 +25,7 @@ class VidstreamScraper:
     def __init__(self):
         self.iv = b"9262859232435825"
         self.key = b"93422192433952489752342908585752"
-        self.BASE_URL = "https://asianload.io/"
+        self.BASE_URL = "https://asianload.info/"
 
     def encrypt(self, message):
         key = self.key
