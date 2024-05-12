@@ -182,7 +182,6 @@ class VidstreamScraper:
         last_link = requests.get(
             master_url, headers=headers, allow_redirects=True, verify=False
         )
-        print(last_link.status_code)
         last_link = last_link.json()["stream_data"]["file"]
         return last_link
 
@@ -227,26 +226,49 @@ class VidstreamScraper:
         parsed_parameters = parse_qs(parsed_url.query)
         parsed_parameters = {k: v[0] for k, v in parsed_parameters.items()}
 
-        id_ = parsed_parameters["id"]
-        host_name = parsed_url.hostname
+        if parsed_parameters.get("id"):
+            id_ = parsed_parameters["id"]
+            host_name = parsed_url.hostname
 
-        encoded_id = self.encrypt(id_.encode("utf-8"))
-        parsed_parameters["id"] = encoded_id
-        parsed_parameters["alias"] = id_
+            encoded_id = self.encrypt(id_.encode("utf-8"))
+            parsed_parameters["id"] = encoded_id
+            parsed_parameters["alias"] = id_
 
-        encrypt_request_url = f"https://{host_name}/encrypt-ajax.php"
+            encrypt_request_url = f"https://{host_name}/encrypt-ajax.php"
 
-        rr = requests.get(
-            params=parsed_parameters,
-            url=encrypt_request_url,
-            headers={**HEADERS, "X-Requested-With": "XMLHttpRequest"},
-        )
-        if rr.status_code == 200:
-            j_data = rr.json()
-            encrupted_data = j_data["data"]
-            decrypted_data = self.decrypt(encrupted_data)
+            rr = requests.get(
+                params=parsed_parameters,
+                url=encrypt_request_url,
+                headers={**HEADERS, "X-Requested-With": "XMLHttpRequest"},
+            )
+            if rr.status_code == 200:
+                j_data = rr.json()
+                encrupted_data = j_data["data"]
+                decrypted_data = self.decrypt(encrupted_data)
 
-            parsed_json = loads(decrypted_data)
-            return parsed_json
-        else:
-            raise VideoSourceNotFound()
+                parsed_json = loads(decrypted_data)
+                return parsed_json
+            else:
+                raise VideoSourceNotFound()
+
+        elif parsed_parameters.get("slug"):
+            s_url = (
+                f"{self.BASE_URL}/streaming.php?slug={parsed_parameters.get('slug')}"
+            )
+            response = requests.get(s_url, allow_redirects=True)
+            soup = BeautifulSoup(response.content, "html.parser")
+
+            javascript_code = soup.select_one("script:nth-child(4)").text
+            pattern = r'file:"(.*?)"'
+            match = re.search(pattern, javascript_code, re.DOTALL)
+
+            if match:
+                file_link = match.group(1)
+                result = {
+                    "source": [
+                        {"file": file_link},
+                    ]
+                }
+                return result
+            else:
+                raise Exception("Unable to fetch Dircet Link!.")
