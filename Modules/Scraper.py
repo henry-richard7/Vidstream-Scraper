@@ -1,3 +1,6 @@
+import sys
+
+sys.path.append("Modules")
 from bs4 import BeautifulSoup
 import requests
 import re
@@ -8,7 +11,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
 from base64 import b64encode, b64decode
 
-from json import loads
+from json import loads, load
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.0.43 Safari/537.36"
@@ -22,13 +25,32 @@ class VideoSourceNotFound(Exception):
 
 
 class VidstreamScraper:
-    def __init__(self):
-        self.iv = b"9262859232435825"
-        self.key = b"93422192433952489752342908585752"
-        self.BASE_URL = "https://asianload.info/"
+    def __init__(self, mode: str = "kdrama"):
+        """_summary_
+        This class scrapes shows from vidstream based sites.
 
-    def encrypt(self, message):
-        key = self.key
+        Args:
+            mode (str, optional): _description_. Defaults to "kdrama".
+            available_modes:
+                anime  -> Anime  contents
+                kdrama -> Kdrama contents
+
+        """
+        self.mode = mode
+        with open("Modules/keys.json", "r") as keys_file:
+            config: dict = load(keys_file)
+
+        final_config = config.get(mode.lower())
+        self.base_url, self.encode_key, self.decrypt_key, self.iv = (
+            final_config.values()
+        )
+
+        self.encode_key = self.encode_key.encode() if self.encode_key else None
+        self.decrypt_key = self.decrypt_key.encode() if self.decrypt_key else None
+        self.iv = self.iv.encode() if self.iv else None
+        print(self.encode_key)
+
+    def encrypt(self, message, key=None):
         iv = self.iv
         # Pad the message to be a multiple of 16 bytes
         padder = padding.PKCS7(128).padder()
@@ -44,8 +66,7 @@ class VidstreamScraper:
         # Return the base64-encoded ciphertext
         return b64encode(ciphertext).decode("utf-8")
 
-    def decrypt(self, ciphertext):
-        key = self.key
+    def decrypt(self, ciphertext, key=None):
         iv = self.iv
 
         # Decode the base64-encoded ciphertext
@@ -74,7 +95,7 @@ class VidstreamScraper:
         result = []
         next_page_number = page_number + 1
         page = requests.get(
-            f"{self.BASE_URL}/?page={page_number}",
+            f"{self.base_url}/?page={page_number}",
             headers=HEADERS,
             allow_redirects=True,
         )
@@ -90,7 +111,8 @@ class VidstreamScraper:
                         show.select_one("div[class='name']").get_text().strip(),
                     ),
                     "image": show.find("img").get("src"),
-                    "href": f'{self.BASE_URL}{show.find("a").get("href")}',
+                    "href": f'{self.base_url}{show.find("a").get("href")}',
+                    "date": show.find("span", class_="date").get_text(),
                 }
             )
         return {"dramas": result, "next_page": next_page_number}
@@ -104,7 +126,7 @@ class VidstreamScraper:
         result = []
 
         page = requests.get(
-            f"{self.BASE_URL}/search.html?keyword={query}",
+            f"{self.base_url}/search.html?keyword={query}",
             headers=HEADERS,
             allow_redirects=True,
         )
@@ -120,7 +142,8 @@ class VidstreamScraper:
                         show.select_one("div[class='name']").get_text().strip(),
                     ),
                     "image": show.find("img").get("src"),
-                    "href": f'{self.BASE_URL}{show.find("a").get("href")}',
+                    "href": f'{self.base_url}{show.find("a").get("href")}',
+                    "date": show.find("span", class_="date").get_text(),
                 }
             )
         return result
@@ -141,7 +164,8 @@ class VidstreamScraper:
                 {
                     "title": episode.select_one("div[class='name']").get_text().strip(),
                     "image": episode.find("img").get("src"),
-                    "href": f'{self.BASE_URL}{episode.find("a").get("href")}',
+                    "href": f'{self.base_url}{episode.find("a").get("href")}',
+                    "date": episode.find("span", class_="date").get_text(),
                 }
             )
         return result
@@ -227,24 +251,40 @@ class VidstreamScraper:
         parsed_parameters = {k: v[0] for k, v in parsed_parameters.items()}
 
         if parsed_parameters.get("id"):
-            id_ = parsed_parameters["id"]
-            host_name = parsed_url.hostname
 
-            encoded_id = self.encrypt(id_.encode("utf-8"))
-            parsed_parameters["id"] = encoded_id
-            parsed_parameters["alias"] = id_
+            iframe_response = requests.get(
+                iframe_url,
+                headers=HEADERS,
+                allow_redirects=True,
+            )
+            iframe_soup = BeautifulSoup(iframe_response.content, "html.parser")
+            encrypted_data = iframe_soup.find(
+                "script",
+                attrs={"data-name": "episode" if self.mode == "anime" else "crypto"},
+            ).attrs.get("data-value")
 
-            encrypt_request_url = f"https://{host_name}/encrypt-ajax.php"
+            decrypted_data = self.decrypt(encrypted_data, key=self.encode_key)
+
+            original_id = decrypted_data.split("&")[0]
+            encrypted_id = self.encrypt(original_id.encode(), self.encode_key)
+
+            ajax_encrypt_url = (
+                self.base_url
+                + "encrypt-ajax.php"
+                + "?id="
+                + encrypted_id
+                + "&alias="
+                + decrypted_data
+            )
 
             rr = requests.get(
-                params=parsed_parameters,
-                url=encrypt_request_url,
+                url=ajax_encrypt_url,
                 headers={**HEADERS, "X-Requested-With": "XMLHttpRequest"},
             )
             if rr.status_code == 200:
                 j_data = rr.json()
                 encrupted_data = j_data["data"]
-                decrypted_data = self.decrypt(encrupted_data)
+                decrypted_data = self.decrypt(encrupted_data, key=self.decrypt_key)
 
                 parsed_json = loads(decrypted_data)
                 return parsed_json
@@ -253,7 +293,7 @@ class VidstreamScraper:
 
         elif parsed_parameters.get("slug"):
             s_url = (
-                f"{self.BASE_URL}/streaming.php?slug={parsed_parameters.get('slug')}"
+                f"{self.base_url}/streaming.php?slug={parsed_parameters.get('slug')}"
             )
             response = requests.get(s_url, allow_redirects=True)
             soup = BeautifulSoup(response.content, "html.parser")
